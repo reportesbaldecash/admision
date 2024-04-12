@@ -1,0 +1,1924 @@
+---
+title: "Admision"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    logo: "logo_sq.png"
+    css: styles1.css
+date: "Actualizado el `r paste0(format(Sys.time(), '%d %B, %Y'), ' a las ', format(Sys.time(), '%H:%M'))`"
+
+---
+
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_knit$set(root.dir = "G:/.shortcut-targets-by-id/1QHYGneeTPBjKLrTjL80_LCO_ZhnFm_MO/BaldeCash/Operaciones/Cobranza/Reporte operativo de cobranza")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r libraries, include=FALSE}
+rm(list = ls())
+library(flexdashboard)
+library(ggplot2)
+library(fmsb)
+library(dplyr)
+library(gridExtra)
+library(kableExtra)
+library(plotly)
+library(DT)
+library(knitr)
+library(lubridate)
+library(bsts)
+library(scales)
+library(raster)
+library(htmltools)
+library(reshape2)
+library(data.table)
+library(doBy)
+library(priceR)
+library(showtext)
+library(readxl)
+library(readr)
+library(tidyr)
+library(stringr)
+library(stats)
+library(rio)
+library(forcats)
+library(aweek)
+Sys.setlocale("LC_TIME", "English")
+
+fecha_analisis <- Sys.Date()
+```
+
+```{r Cargar_datos, results='hide', message=FALSE,warning=FALSE}
+#setwd('G:/.shortcut-targets-by-id/1QHYGneeTPBjKLrTjL80_LCO_ZhnFm_MO/BaldeCash/Producto/Bases de datos/')
+setwd('G:/.shortcut-targets-by-id/1QHYGneeTPBjKLrTjL80_LCO_ZhnFm_MO/BaldeCash/Producto/Bases de datos/')
+#setwd('/Users/baldecash/Library/CloudStorage/GoogleDrive-marco.delrio@baldecash.com/My Drive/BaldeCash/Producto/Bases de datos')
+
+#current_date <- Sys.Date() - 1
+source("Cargar_datos2.R")
+
+meses.nombre <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                  "Julio", "Agosto", "Setiembre", "Octubre", "Noviembre", "Diciembre")
+
+colores=c("#474fd5","#00e4d3","#8fce00","#fdca56","#ff4d50","#332d2d","#ff51a7","#834505",
+          "#474fd5","#00e4d3","#8fce00","#fdca56","#ff4d50","#332d2d","#ff51a7","#834505")#En caso se tengan mas categorias, agregar colores
+
+fecha_inicio <- Sys.Date() - 30 
+
+fechas <- seq(fecha_inicio, Sys.Date(), by="days")
+
+equipo.admision <- c("Antony Zanabria", "Frank Medina", "Maritza Ruiz", "Sandra Chipa", "Gretchen Garrat")
+
+
+```
+
+```{r}
+
+requisitos_solicitud <- querySQL(
+    "
+SELECT
+    RS.solicitud_id as Solicitud,
+    RE.nombre as Requisito,
+    RSE.nombre as Estado,
+    RS.created_at as \"Fecha.Creacion.Requisito\",
+    RS.updated_at as \"Fecha.Cambio.Requisito\"
+FROM requisito_solicitud RS
+LEFT JOIN requisito RE ON RE.id = RS.requisito_id
+LEFT JOIN requisito_solicitud_estado RSE ON RSE.id = RS.requisito_solicitud_estado_id
+WHERE RE.nombre != 'Ingresos totalmente dependientes'
+    "
+)
+
+requisitos.por.solicitud <- requisitos_solicitud %>%
+    mutate(Estado = paste0("Requisitos.",str_to_title(Estado))) %>% 
+    group_by(Solicitud, Estado) %>% 
+    summarise(Total = n()) %>% 
+    pivot_wider(names_from = Estado, values_from = Total) %>% 
+    replace(is.na(.), 0) %>% 
+    mutate(Requisitos.Total = rowSums(across(everything())),
+           Validada = as.logical(Requisitos.Total == Requisitos.Validado))
+
+
+gestion_admision <- querySQL(
+    "
+SELECT
+    GA.solicitud_id as Solicitud,
+    GT.nombre as Tipo,
+    GR.nombre as Resultado,
+    U.name as Owner,
+    PNC.celular as Celular,
+    GA.created_at as Fecha
+FROM gestion_admision GA
+LEFT JOIN gestion_tipo GT ON GT.id = GA.gestion_tipo_id
+LEFT JOIN gestion_resultado GR ON GR.id = GA.gestion_resultado_id
+LEFT JOIN users U ON U.id = GA.gestor_id
+LEFT JOIN persona_numero_celular PNC ON PNC.id = GA.persona_numero_celular_id
+    "
+)
+
+
+cambio.estado.solicitud <- querySQL(
+    "
+    SELECT
+        CES.solicitud_id as Solicitud,
+        U.name as Owner,
+        CES.status_anterior as Status_anterior,
+        CES.status_actual as Status_actual,
+        CES.created_at as Fecha
+    FROM cambio_estado_solicitud CES
+    LEFT JOIN users U ON CES.owner_id = U.id
+    "
+)
+
+# solicitudes %>% 
+#     left_join(
+#         cambio.estado.solicitud %>% filter(Status_actual %in% c("listo para aprobar","listo para rechazar")) %>% 
+#             group_by(Solicitud) %>% summarize(FechaComite = max(Fecha)),
+#         by = c("Id"="Solicitud")
+#     ) %>% 
+#     mutate(
+#         TipoComite = case_when(
+#             !is.na(FechaComite) & Owner c()
+#         )
+#     )
+
+# fecha.solicitud <- querySQL("SELECT S.id as Solicitud, 
+#                             DATE_ADD(S.created_at, INTERVAL - 5 HOUR) as FechaSolicitud
+#                             FROM solicitud S")
+
+fecha.solicitud <- querySQL("SELECT S.id as Solicitud, 
+                            S.created_at as FechaSolicitud
+                            FROM solicitud S")
+
+
+```
+
+```{r Valueboxes}
+
+n_precalificacion <- solicitudes %>% 
+    left_join(requisitos.por.solicitud, by=c("Id"="Solicitud")) %>% 
+    filter(Estado %in% c("revisando"), !Validada) %>%
+    nrow()
+    
+vBox_precal <- valueBox(n_precalificacion, color = colores[1],
+         icon = "fa-users")
+
+
+
+n_evaluacion <- solicitudes %>% 
+    left_join(requisitos.por.solicitud, by=c("Id"="Solicitud")) %>% 
+    filter(Estado %in% c("revisando"), Validada) %>%
+    nrow()
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = colores[1],
+         icon = "fa-users")
+
+
+
+n_comite <- solicitudes %>% 
+    filter(
+        Estado %in% c("listo para aprobar", "listo para rechazar")
+    ) %>%
+    nrow()
+
+vBox_comite <- valueBox(n_comite, color = colores[1],
+         icon = "fa-users")
+
+
+
+n_validacion <- solicitudes %>% 
+    left_join(creditos %>% dplyr::select(Solicitud, Fecha.de.Firma), by=c("Id"="Solicitud")) %>% 
+    filter(
+        Estado == "aprobado",
+        Source %not in% c("solicitud", "rrss"),
+        is.na(Fecha.de.Firma),
+        (EstadoGeneral == "-" | is.na(EstadoGeneral))
+    ) %>% 
+    nrow()
+    
+vBox_validacion <- valueBox(n_validacion, color = colores[1],
+         icon = "fa-users")
+
+
+
+n_por_firmar <- creditos %>% 
+    filter(Estatus.de.Solicitud == "Falta firmar") %>% nrow()
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = colores[1],
+         icon = "fa-users")
+
+```
+
+
+
+General {data-navmenu="General"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Saldo de solicitudes abiertas
+
+```{r}
+
+solis_abiertas_fecha <- function(fecha){
+    n <- solicitudes %>% filter(
+        Fecha >= as_date("2023-04-01"),
+        Fecha <= fecha,
+        (FechaAprobacion > fecha | FechaNegación > fecha | (is.na(FechaAprobacion) & is.na(FechaNegación)) )
+    ) %>% nrow()
+    return(n)
+}
+
+saldo_solis_abiertas <- data.frame(Fecha = fechas)
+
+saldo_solis_abiertas$Saldo = sapply(fechas, solis_abiertas_fecha)
+
+
+plot <- ggplot(saldo_solis_abiertas, aes(x=Fecha, y=Saldo)) +
+    geom_col(width = 0.8, fill = colores[1]) +
+    scale_x_date(date_breaks = "3 days", date_labels = "%b-%d", limits = c(fecha_inicio, Sys.Date()+1)) +
+    labs(x="",y="") +
+    theme_minimal(base_size = 10)
+
+ggplotly(plot) %>%
+  layout(dragmode = F,legend = list(orientation = 'h')) %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = plot$data$Fecha,
+    hovertemplate = paste('<i>Fecha: %{text}</i>',
+                        '<br><b>Solicitudes abiertas</b>: %{y:0}<extra></extra>'))
+
+```
+
+
+### Evaluaciones y solicitudes diarias
+
+```{r}
+
+eval.solis.diarias <- data.frame(Fecha = fechas)
+
+# Revisar si debería contar las de rechazo automático
+solicitudes.diarias <- function(fecha){return(solicitudes %>% filter(Fecha ==fecha) %>% nrow())}
+
+# 
+# requisitos_solicitud %>%
+#     mutate(Fecha.Validacion = ifelse(Estado == "VALIDADO", Fecha.Cambio.Requisito, NA)) %>% 
+#     group_by(Solicitud) %>% 
+#     summarise(Fecha.Validacion = max(Fecha.Validacion))
+# 
+# evaluaciones.diarias <- function(fecha){
+#     n <- solicitudes %>% 
+#         left_join(requisitos_solicitud, by=c("Id"="Solicitud")) %>% 
+#         filter(Fecha <= fecha, (Fecha.Validacion > fecha | is.na(Fecha.Validacion)))
+#     return(n)
+# }
+
+
+evaluaciones.diarias <- function(fecha){
+    # n <- cambio.estado.solicitud %>% 
+    #     filter(
+    #         Status_actual %in% c("aprobado", "rechazado"),
+    #         as_date(Fecha) == fecha
+    #     ) %>%
+    #     distinct(Solicitud) %>% 
+    #     nrow()
+    n <- solicitudes %>% 
+        filter(
+            FechaAprobacion == fecha | FechaNegación == fecha
+        ) %>%
+        nrow()
+    return(n)
+}
+
+eval.solis.diarias$nuevas.solicitudes = sapply(fechas, solicitudes.diarias)
+eval.solis.diarias$evaluaciones.diarias = sapply(fechas, evaluaciones.diarias)
+eval.solis.diarias$netas = eval.solis.diarias$nuevas.solicitudes - eval.solis.diarias$evaluaciones.diarias
+
+
+
+grafico <- plot_ly(eval.solis.diarias, x = ~Fecha) %>%
+    add_bars(
+        y = ~nuevas.solicitudes, 
+        name = "Nuevas Solicitudes", 
+        textposition = "none",
+        marker = list(color=colores[1]),
+        hoverinfo = "text",
+        text = ~paste("Fecha: ", eval.solis.diarias$Fecha, "<br>Valor: ", eval.solis.diarias$nuevas.solicitudes)) %>%
+    add_bars(
+        y = ~evaluaciones.diarias, 
+        name = "Evaluaciones Diarias",
+        textposition = "none",
+        marker = list(color=colores[3]),
+        hoverinfo = "text",
+        text = ~paste("Fecha: ", eval.solis.diarias$Fecha, "<br>Valor: ", eval.solis.diarias$evaluaciones.diarias)) %>%
+    layout(yaxis = list(
+            title="", 
+            zeroline = F,
+            range = c(0, max(eval.solis.diarias[c("nuevas.solicitudes","evaluaciones.diarias")]) * 1.15)
+        ),
+        xaxis = list(
+            title="",
+            tickmode = "array",  # Usar una serie de valores personalizados para los ticks
+            tickvals = fechas[seq(1, length(fechas), by = 5)],  # Seleccionar cada 5 días
+            ticktext = format(fechas[seq(1, length(fechas), by = 5)], "%b-%d")
+        ),
+        barmode = "group",
+        dragmode = F,
+        hovermode = "x",
+        legend = list(x = 0.05, y = 1)) %>%
+    config(displayModeBar = F, displaylogo = FALSE) 
+# %>%
+#  style(text = data$Fecha, hovertemplate = paste('<i>Fecha: %{text}</i>',
+#                          '<br><b>Valor</b>: %{y:0}<extra></extra>'))
+
+grafico
+```
+
+
+
+
+General 2 {data-navmenu="General"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Tiempo de espera en días
+
+```{r}
+
+tiempo_atencion <- solicitudes %>% 
+    left_join(fecha.solicitud, by=c("Id"="Solicitud")) %>%
+    mutate(
+        FechaAtencion = case_when(
+        !is.na(FechaAprobacion) ~ as_datetime(FechaAprobacion),
+        !is.na(FechaNegación) ~ as_datetime(FechaNegación),
+        TRUE ~ Sys.time()
+        ),
+        TiempoAtencion = as.integer(floor(difftime(FechaAtencion, FechaSolicitud, units = "days")))
+    ) %>% 
+    filter(Estado %in% c("revisando", "listo para aprobar", "listo para rechazar") ) %>% 
+    dplyr::select(Id, TiempoAtencion) %>% 
+    group_by(TiempoAtencion) %>% 
+    summarise(n = n()) %>% 
+    arrange(TiempoAtencion)
+
+
+plot <- ggplot(tiempo_atencion, aes(x=TiempoAtencion, y=n)) +
+    geom_bar(stat="identity", fill = colores[1], width = 0.8) +
+    labs(x="", y="") +
+    theme_minimal(10)
+
+ggplotly(plot) %>%
+  layout(dragmode = F,legend = list(orientation = 'h')) %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = plot$data$TiempoAtencion,
+    hovertemplate = paste('<i>Días de espera: %{text}</i>',
+                        '<br><b>Solicitudes</b>: %{y:0}<extra></extra>'))
+
+```
+
+
+
+### Tiempo de espera promedio
+
+```{r}
+
+tiempo.promedio.atencion <- data.frame(Fecha = fechas)
+
+
+tiempo.de.espera <- function(fecha){
+    
+    temp.datetime <- as_datetime(paste0(fecha, " 09:00:00"))
+    
+    n <- solicitudes %>% 
+        left_join(fecha.solicitud, by=c("Id"="Solicitud")) %>%
+        filter(
+            Fecha > as_date("2023-04-01"),
+            FechaSolicitud < temp.datetime,
+            (is.na(FechaAprobacion) | FechaAprobacion > temp.datetime),
+            (is.na(FechaNegación) | FechaNegación > temp.datetime)
+        ) %>% 
+        mutate(
+            TiempoAtencion = as.integer(floor(difftime(temp.datetime, FechaSolicitud, units = "days")))
+        ) %$%
+        round(mean(TiempoAtencion, na.rm=TRUE), digits = 2)
+    return(n)
+}
+
+tiempo.promedio.atencion$Tiempo.espera <- sapply(fechas, tiempo.de.espera)
+
+
+plot <- ggplot(tiempo.promedio.atencion, aes(x=Fecha, y=Tiempo.espera)) +
+    geom_line(color = colores[3], size = 1) +
+    scale_x_date(date_breaks = "3 days", date_labels = "%b-%d") +
+    labs(x="", y="") +
+    theme_minimal(base_size = 10)
+
+ggplotly(plot) %>%
+  layout(dragmode = F,legend = list(orientation = 'h'), hovermode = "x") %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = plot$data$Fecha,
+    hovertemplate = paste('<i>Fecha: %{text}</i>',
+                        '<br><b>Días de espera en promedio</b>: %{y:0}<extra></extra>'))
+```
+
+
+
+
+General 3 {data-navmenu="General"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+
+### Solicitudes netas
+
+```{r}
+
+plot <- ggplot(data = eval.solis.diarias, aes(x= Fecha, y = netas)) +
+    geom_line(stat = "identity", color = colores[2], size = 1) +
+    labs(x="",y="") +
+    theme_minimal(base_size = 10) +
+    scale_y_continuous(limits = c(min(eval.solis.diarias$netas)*1.1, max(eval.solis.diarias$netas*1.1))) +
+    scale_x_date(date_breaks = "3 days", date_labels = "%b-%d", limits = c(fecha_inicio, Sys.Date()+1)) +
+    geom_hline(yintercept = 0, color = colores[1], size = 0.7, linetype="longdash", alpha = 1) 
+
+ggplotly(plot) %>%
+  layout(dragmode = F,legend = list(orientation = 'h'), hovermode = "x") %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = plot$data$Fecha,
+    hovertemplate = paste('<i>Fecha: %{text}</i>',
+                        '<br><b>Variación</b>: %{y:0}<extra></extra>'))
+```
+
+
+### Solicitudes en evaluación o precalificación por owner
+
+
+```{r}
+
+
+salida.de.revision <- cambio.estado.solicitud %>% 
+    filter(
+        Status_anterior == "en proceso",
+        Status_actual == "listo para rechazar" | Status_actual == "listo para aprobar"
+    ) %>% 
+    group_by(Solicitud) %>% 
+    summarise(Fecha.cambio.estado = min(as_date(Fecha)))
+
+
+solis.en.precal.o.eval <- function(fecha, owner, inicio.del.dia = F){
+    
+    if(inicio.del.dia){
+        temp <- solicitudes %>% 
+            left_join(salida.de.revision, by=c("Id"="Solicitud")) %>% 
+            filter(
+                Fecha >= as_date("2023-04-01"),
+                Owner == owner,
+                Fecha < fecha, 
+                (Fecha.cambio.estado >= fecha | is.na(Fecha.cambio.estado) )
+            ) %>% 
+            nrow()
+    }else{
+        temp <- solicitudes %>% 
+            left_join(salida.de.revision, by=c("Id"="Solicitud")) %>% 
+            filter(
+                Fecha >= as_date("2023-04-01"),
+                Owner == owner, 
+                Fecha <= fecha, 
+                (Fecha.cambio.estado > fecha | is.na(Fecha.cambio.estado) )
+            ) %>% 
+            nrow()
+    }
+    return(temp)
+}
+
+dfs <- vector("list", length(equipo.admision))
+
+for(i in 1:length(equipo.admision)){
+    owner <- equipo.admision[i]
+    df.owner <- data.frame(Fecha = fechas)
+    df.owner$Owner <- owner
+    df.owner$Solicitudes.revision <- sapply(fechas, solis.en.precal.o.eval, owner = owner)
+    
+    dfs[[i]] <- df.owner
+}
+
+
+solicitudes.en.revision.por.owner <- bind_rows(dfs)
+
+data <- solicitudes.en.revision.por.owner %>%
+  group_by(Fecha, Owner) %>%
+  summarise(n = sum(Solicitudes.revision)) %>%
+  mutate(Solicitudes.revision = n / sum(n))
+
+p <- ggplot(data, aes(x=Fecha, y=Solicitudes.revision, fill=Owner)) +
+    geom_area(colour = "white", size=0.5, alpha=0.8) +
+    theme_minimal() +
+    scale_fill_manual(values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_date(date_breaks = "5 days", date_labels = "%b-%d")
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h')) %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = data$Fecha,
+    hovertemplate = paste('<i>Fecha: %{text}</i>',
+                        '<br><b>Solicitudes en precalificación o revisión</b>: %{y:0.00}<extra></extra>'))
+
+```
+
+
+
+
+
+
+Pre-Calificación {data-navmenu="Pre Calificación"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes Precal}
+
+vBox_precal <- valueBox(n_precalificacion, color = colores[1],
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = "#d1dbeb",
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock de solicitudes por calificar
+
+```{r}
+
+
+tiempo.precalificacion <- requisitos_solicitud %>% 
+    mutate(Timestamp.validacion = ifelse(Estado == "VALIDADO", Fecha.Cambio.Requisito, NA)) %>% 
+    group_by(Solicitud) %>% 
+    summarise(Timestamp.validacion = max(Timestamp.validacion))
+
+
+solicitudes.precalificacion <- solicitudes %>% 
+    mutate(
+        Owner.admision = ifelse(Owner %in% equipo.admision, Owner, "Otros")
+    ) %>% 
+    left_join(tiempo.precalificacion, by=c("Id"="Solicitud"))
+
+solis.en.precal <- function(fecha, inicio.del.dia = FALSE){
+    if(inicio.del.dia){
+        n <- solicitudes.precalificacion %>% 
+            filter(Fecha < fecha,
+                   (as_date(tiempo.precalificacion) >= fecha | is.na(tiempo.precalificacion) )) %>% 
+            nrow()
+    }else{
+        n <- solicitudes.precalificacion %>% 
+            filter(Fecha <= fecha,
+                   (as_date(tiempo.precalificacion) >  fecha | is.na(tiempo.precalificacion) )) %>% 
+            nrow()
+    }
+    
+    return(n)
+}
+
+```
+
+
+### Validación diaria L30D
+
+```{r}
+
+```
+
+
+### Tiempo en espera de solicitudes en precalificación
+
+```{r}
+
+```
+
+
+
+Por owner {data-navmenu="Pre Calificación"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock de solicitudes por calificar
+
+```{r}
+
+```
+
+
+### Validación diaria L30D
+
+```{r}
+
+```
+
+
+### Tiempo en espera de solicitudes en precalificación
+
+```{r}
+
+```
+
+
+
+
+
+
+Validación informal 1 {data-navmenu="Verificación de informales"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes informal}
+
+vBox_precal <- valueBox(n_precalificacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = "#d1dbeb",
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock de solicitudes por calificar
+
+
+```{r}
+
+```
+
+
+
+
+Validación informal 2 {data-navmenu="Verificación de informales"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock de solicitudes por calificar
+
+
+```{r}
+
+```
+
+
+
+
+Gestiones por owner {data-navmenu="Gestiones de Evaluación"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes Evaluación}
+
+vBox_precal <- valueBox(n_precalificacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = colores[1],
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = "#d1dbeb",
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Llamadas de admisión diarias 
+
+```{r}
+rango = lubridate::hours(1)
+
+gestiones_validas <- gestion_admision %>% 
+    filter(Owner %in% equipo.admision) %>% 
+    mutate(Fecha = as_datetime(Fecha)) %>% 
+    group_by(Owner, Solicitud) %>% 
+    arrange(Fecha) %>%
+    mutate(Fecha.Limite = lag(Fecha) + rango,
+           Valida = ifelse(is.na(Fecha.Limite), TRUE, ifelse(Fecha > Fecha.Limite, TRUE, FALSE ))
+    ) %>%
+    filter(Valida) %>% 
+    dplyr::select(-Fecha.Limite, -Valida)
+
+
+llamadas_admision <- gestiones_validas %>% 
+    filter(
+        Tipo == "LLAMADA",
+        Owner %in% equipo.admision
+    )
+
+
+llamadas.admision.por.fecha <- function(fecha, owner=NA){
+    
+    if(is.na(owner)){
+        listado_owners <- equipo.admision
+    }else{
+        listado_owners <- c(owner)
+    }
+    
+    n <- llamadas_admision %>% 
+        filter(
+            as_date(Fecha) == fecha,
+            Owner %in% listado_owners
+        ) %>% 
+        nrow()
+    
+    return(n)
+}
+
+
+dfs <- vector("list", length(equipo.admision))
+
+for(i in 1:length(equipo.admision)){
+    owner <- equipo.admision[i]
+    df.owner <- data.frame(Fecha = fechas)
+    df.owner$Owner <- owner
+    df.owner$LlamadasDiarias <- sapply(fechas, llamadas.admision.por.fecha, owner = owner)
+    
+    dfs[[i]] <- df.owner
+}
+
+
+gestiones_diarias <- bind_rows(dfs)
+
+data <- gestiones_diarias
+
+p <- ggplot(data, aes(x=Fecha, y=LlamadasDiarias, fill=Owner)) +
+    geom_bar(position = "stack", stat="identity", size=0.5, alpha=0.8) +
+    theme_minimal() +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_x_date(date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_y_continuous(limits = c(0, data %>% group_by(Fecha) %>% summarise(Llamadas = sum(LlamadasDiarias)) %$% max(Llamadas, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h',x = 0.05, y = 1)) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+```
+
+
+
+### Mensajes de admisión diarios
+
+```{r}
+
+mensajes_admision <- gestiones_validas %>% 
+    filter(
+        Tipo == "MENSAJE",
+        Owner %in% equipo.admision
+    )
+
+
+mensajes.admision.por.fecha <- function(fecha, owner=NA){
+    
+    if(is.na(owner)){
+        listado_owners <- equipo.admision
+    }else{
+        listado_owners <- c(owner)
+    }
+    
+    n <- mensajes_admision %>% 
+        filter(
+            as_date(Fecha) == fecha,
+            Owner %in% listado_owners
+        ) %>% 
+        nrow()
+    
+    return(n)
+}
+
+
+dfs <- vector("list", length(equipo.admision))
+
+for(i in 1:length(equipo.admision)){
+    owner <- equipo.admision[i]
+    df.owner <- data.frame(Fecha = fechas)
+    df.owner$Owner <- owner
+    df.owner$MensajesDiarios <- sapply(fechas, mensajes.admision.por.fecha, owner = owner)
+    
+    dfs[[i]] <- df.owner
+}
+
+
+gestiones_diarias <- bind_rows(dfs)
+
+data <- gestiones_diarias
+
+p <- ggplot(data, aes(x=Fecha, y=MensajesDiarios, fill=Owner)) +
+    geom_bar(position = "stack", stat="identity", size=0.5, alpha=0.8) +
+    theme_minimal() +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_x_date(date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_y_continuous(limits = c(0, data %>% group_by(Fecha) %>% summarise(Llamadas = sum(MensajesDiarios)) %$% max(Llamadas, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h',x = 0.05, y = 1)) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+```
+
+
+
+
+
+
+Gestiones por horas {data-navmenu="Gestiones de Evaluación"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Gestiones de hoy (por horas)
+
+```{r}
+
+gestiones.por.hora <- gestion_admision %>% 
+    filter(as_date(Fecha) == (Sys.Date()),
+           Owner %in% equipo.admision) %>% 
+    mutate(Hora = hour(Fecha) ) %>% 
+    dplyr::count(Hora, Owner) %>%
+    arrange(n) %>% 
+    dplyr::rename(Gestiones = n)
+
+
+data <- gestiones.por.hora
+
+p <- ggplot(data, aes(x=Hora, y= Gestiones, fill=Owner)) +
+    geom_bar(position = "stack", stat="identity", size=0.5, alpha=0.9, width = 0.9) +
+    theme_minimal(base_size = 10) +
+    #theme(panel.grid.major = element_blank()) +
+    scale_x_continuous(
+        breaks = seq(min(min(data$Hora), 8), max(max(data$Hora), 20), by = 1),
+        limits = c(min(min(data$Hora), 8), max(max(data$Hora), 20))
+        ) +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_y_continuous(limits = c(0, data %>% group_by(Hora) %>% summarise(Gestiones = sum(Gestiones)) %$% max(Gestiones, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h',x = 0.05, y = 1)) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+```
+
+### Gestiones L30D (por horas)
+
+```{r}
+
+gestiones.por.hora <- gestion_admision %>% 
+    filter(Owner %in% equipo.admision,
+           !is.weekend(as_date(Fecha))) %>% 
+    mutate(Hora = hour(Fecha),
+           Fecha = as_date(Fecha)) %>%
+    dplyr::count(Hora, Fecha) %>%
+    group_by(Hora) %>% 
+    summarise(Gestiones = round(mean(n), digits=2))
+
+
+data <- gestiones.por.hora
+
+
+p <- ggplot(data, aes(x=Hora, y= Gestiones)) +
+    geom_bar(stat="identity", size=0.8, alpha=0.9, fill=colores[1]) +
+    theme_minimal(base_size = 10) +
+    #theme(panel.grid.major = element_blank()) +
+    scale_x_continuous(breaks = seq(min(data$Hora), max(data$Hora), by = 1)) +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_y_continuous(limits = c(0, data %$% max(Gestiones, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+```
+
+
+
+
+Evaluación {data-navmenu="Evaluación"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Cambios a Listo para Aprobar
+
+```{r}
+
+lpa_por_fecha <- function(fecha, owner=NA){
+    
+    if(is.na(owner)){
+        listado_owners <- equipo.admision
+    }else{
+        listado_owners <- c(owner)
+    }
+    
+    n <- cambio.estado.solicitud %>% 
+        filter(
+            Owner %in% listado_owners,
+            Status_actual == "listo para aprobar",
+            as_date(Fecha) == fecha
+        ) %>% 
+        nrow()
+    
+    return(n)
+}
+
+
+
+dfs <- vector("list", length(equipo.admision))
+
+for(i in 1:length(equipo.admision)){
+    owner <- equipo.admision[i]
+    df.owner <- data.frame(Fecha = fechas)
+    df.owner$Owner <- owner
+    df.owner$ListoParaAprobar <- sapply(fechas, lpa_por_fecha, owner = owner)
+    
+    dfs[[i]] <- df.owner
+}
+
+
+lpa_diario <- bind_rows(dfs)
+
+data <- lpa_diario
+
+p <- ggplot(data, aes(x=Fecha, y=ListoParaAprobar, fill=Owner)) +
+    geom_bar(position = "stack", stat="identity", size=0.5, alpha=0.85) +
+    theme_minimal() +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_x_date(date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_y_continuous(limits = c(0, data %>% group_by(Fecha) %>% summarise(y = sum(ListoParaAprobar)) %$% max(y, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h',x = 0.05, y = 1)) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+
+```
+
+
+### Cambios a Listo para Rechazar
+
+```{r}
+
+lpr_por_fecha <- function(fecha, owner=NA){
+    
+    if(is.na(owner)){
+        listado_owners <- equipo.admision
+    }else{
+        listado_owners <- c(owner)
+    }
+    
+    n <- cambio.estado.solicitud %>% 
+        filter(
+            Owner %in% listado_owners,
+            Status_actual == "listo para rechazar",
+            as_date(Fecha) == fecha
+        ) %>% 
+        nrow()
+    
+    return(n)
+}
+
+
+
+dfs <- vector("list", length(equipo.admision))
+
+for(i in 1:length(equipo.admision)){
+    owner <- equipo.admision[i]
+    df.owner <- data.frame(Fecha = fechas)
+    df.owner$Owner <- owner
+    df.owner$ListoParaRechazar <- sapply(fechas, lpr_por_fecha, owner = owner)
+    
+    dfs[[i]] <- df.owner
+}
+
+
+lpr_diario <- bind_rows(dfs)
+
+data <- lpr_diario
+
+p <- ggplot(data, aes(x=Fecha, y=ListoParaRechazar, fill=Owner)) +
+    geom_bar(position = "stack", stat="identity", size=0.5, alpha=0.85) +
+    theme_minimal() +
+    scale_fill_manual(name = "", values = colores[1:length(equipo.admision)]) +
+    labs(x="",y="") +
+    scale_x_date(date_breaks = "5 days", date_labels = "%b-%d") +
+    scale_y_continuous(limits = c(0, data %>% group_by(Fecha) %>% summarise(y = sum(ListoParaRechazar)) %$% max(y, na.rm=T)*1.2))
+
+ggplotly(p) %>%
+  layout(dragmode = F,legend = list(orientation = 'h',x = 0.05, y = 1)) %>%
+  config(displayModeBar = F, displaylogo = FALSE) 
+
+```
+
+
+### Porcentaje de reversiones
+
+```{r}
+
+lpr_l30d <- cambio.estado.solicitud %>% 
+    filter(
+        Fecha > fecha_inicio,
+        Status_actual == "listo para rechazar"
+    ) %>% 
+    pull(Solicitud)
+
+
+reversiones.por.fecha <- function(fecha){
+    
+    n <- solicitudes %>% 
+        filter(
+            as_date(FechaAprobacion) > fecha,
+            Id %in% lpr_l30d
+        ) %>% 
+        nrow()
+    return(n)
+}
+
+
+reversiones.diarias <- data.frame(Fecha = fechas)
+
+reversiones.diarias$Reversiones <- sapply(fechas, reversiones.por.fecha)
+
+reversiones.diarias <- reversiones.diarias %>% filter(!is.weekend(Fecha))
+
+data <- reversiones.diarias
+
+# p <- ggplot(data = data, aes(x=Fecha, y=Reversiones)) +
+#     geom_line(linewidth = 1) +
+#     theme_light(base_size = 10) +
+#     labs(x="",y="") +
+#     scale_y_continuous(limits = c(0, ))
+
+```
+
+
+
+
+
+General {data-navmenu="Comité"}
+==================================
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes Comite}
+
+vBox_precal <- valueBox(n_precalificacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = colores[1],
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = "#d1dbeb",
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock diario L30D
+
+```{r}
+
+```
+
+### Flujo diario
+
+```{r}
+
+```
+
+
+
+
+
+General {data-navmenu="Comité 2"}
+==================================
+
+
+Column {data-width=200}
+----------------------------------
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = "#d1dbeb", icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+
+
+Column {data-width=800}
+----------------------------------
+
+### Evaluación diaria L30D
+
+```{r}
+
+evaluacion.comite.diario <- data.frame(Fecha = fechas)
+
+aprobaciones.fecha <- function(fecha){
+    n <- solicitudes %>% 
+        filter(
+            FechaAprobacion== fecha
+        ) %>% 
+        nrow()
+    return(n)
+}
+
+rechazos.fecha <- function(fecha){
+    n <- solicitudes %>% 
+        filter(
+            FechaNegación== fecha
+        ) %>% 
+        nrow()
+    return(n)
+}
+
+evaluacion.comite.diario$Aprobaciones <- sapply(fechas, aprobaciones.fecha)
+evaluacion.comite.diario$Rechazos <- sapply(fechas, rechazos.fecha)
+
+
+
+grafico <- plot_ly(evaluacion.comite.diario, x = ~Fecha) %>%
+    add_bars(
+        y = ~Aprobaciones, 
+        name = "Aprobaciones", 
+        textposition = "none",
+        marker = list(color=colores[2],
+                      line = list(width = 0)),
+        hoverinfo = "text",
+        text = ~paste("Fecha: ", evaluacion.comite.diario$Fecha, "<br>Valor: ", evaluacion.comite.diario$Aprobaciones)) %>%
+    add_bars(
+        y = ~Rechazos, 
+        name = "Rechazos",
+        textposition = "none",
+        marker = list(color=colores[1]),
+        hoverinfo = "text",
+        text = ~paste("Fecha: ", evaluacion.comite.diario$Fecha, "<br>Valor: ", evaluacion.comite.diario$Rechazos)) %>%
+    layout(yaxis = list(title="", zeroline = F),
+        xaxis = list(
+            title="",
+            tickmode = "array",  # Usar una serie de valores personalizados para los ticks
+            tickvals = fechas[seq(1, length(fechas), by = 5)],  # Seleccionar cada 5 días
+            ticktext = format(fechas[seq(1, length(fechas), by = 5)], "%b-%d")
+        ),
+        barmode = "group",
+        dragmode = F,
+        hovermode = "x",
+        legend = list(x = 0.05, y = 1)) %>%
+    config(displayModeBar = F, displaylogo = FALSE) 
+# %>%
+#  style(text = data$Fecha, hovertemplate = paste('<i>Fecha: %{text}</i>',
+#                          '<br><b>Valor</b>: %{y:0}<extra></extra>'))
+
+grafico
+```
+
+### Tiempo promedio en comité
+
+
+```{r}
+fecha.comite <- cambio.estado.solicitud %>%
+    filter(
+        Status_actual %in% c("listo para aprobar", "listo para rechazar")
+    ) %>% 
+    group_by(Solicitud) %>% 
+    summarise(FechaComite = max(Fecha))
+
+tiempo.promedio.comite.por.fecha <- function(fecha){
+    
+    n <- solicitudes %>% 
+        left_join(
+            fecha.comite,
+            by = c("Id"="Solicitud")
+        ) %>% 
+        filter(
+            as_date(FechaComite) < fecha,
+            FechaAprobacion > fecha | FechaNegación > fecha
+            | (is.na(FechaAprobacion) & is.na(FechaNegación))
+        ) %>% 
+        mutate(
+            Tiempo.Espera = difftime(as.POSIXct(paste(format(fecha, "%Y-%m-%d"),format(Sys.time(), "%H:%M:%S"))), 
+                                     FechaComite, 
+                                     units="days") 
+        ) %$%
+        round(as.numeric(mean(Tiempo.Espera, na.rm = TRUE)), digits = 2)
+    return(n)
+}
+
+tiempo.espera.comite <- data.frame(Fecha = fechas)
+tiempo.espera.comite$Espera.promedio <- sapply(fechas, tiempo.promedio.comite.por.fecha)
+
+plot <- ggplot(tiempo.espera.comite, aes(x=Fecha, y=Espera.promedio)) +
+    geom_line(color = colores[1], size = 1) +
+    scale_x_date(date_breaks = "3 days", date_labels = "%b-%d", limits = c(as_date("2023-07-28"),Sys.Date())) +
+    labs(x="", y="") +
+    theme_minimal(base_size = 10)
+
+ggplotly(plot) %>%
+  layout(dragmode = F,legend = list(orientation = 'h'), hovermode = "x") %>%
+  config(displayModeBar = F, displaylogo = FALSE) %>%
+  style(text = plot$data$Fecha,
+    hovertemplate = paste('<i>Fecha: %{text}</i>',
+                        '<br><b>Días promedio en comité</b>: %{y:0}<extra></extra>'))
+```
+
+
+
+
+Validación
+==================================
+
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes validacion convenios}
+
+vBox_precal <- valueBox(n_precalificacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = colores[1],
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = "#d1dbeb",
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock diario
+
+```{r}
+
+```
+
+
+### Tiempo de espera en validación por día
+
+```{r}
+
+```
+
+
+
+
+
+Por firmar {data-navmenu="Por firmar"}
+==================================
+
+
+Column {data-width=200}
+----------------------------------
+
+
+```{r Valueboxes por firmar}
+
+vBox_precal <- valueBox(n_precalificacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_evaluacion <- valueBox(n_evaluacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_comite <- valueBox(n_comite, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_validacion <- valueBox(n_validacion, color = "#d1dbeb",
+         icon = "fa-users")
+
+vBox_por_firmar <- valueBox(n_por_firmar, color = colores[1],
+         icon = "fa-users")
+
+```
+
+
+### Pre-calificación
+
+```{r}
+vBox_precal
+```
+
+### Validación informal
+
+```{r}
+valueBox("TBD", color = colores[1], icon = "fa-users")
+```
+
+### Evaluación
+
+```{r}
+vBox_evaluacion
+```
+
+### Comité
+
+```{r}
+vBox_comite
+```
+
+### Validación
+
+```{r}
+vBox_validacion
+```
+
+### Por firmar
+
+```{r}
+vBox_por_firmar
+```
+
+
+Column {data-width=800}
+----------------------------------
+
+### Stock diario
+
+```{r}
+
+# solicitudes %>% 
+#     left_join(fecha.solicitud, by=c("Id"="Solicitud")) %>% 
+#     filter(Fecha > as_date("2023-04-01")) %>% 
+#     dplyr::select(Id, FechaSolicitud, FechaAprobacion, FechaNegación)
+
+```
+
+
+### Tiempo de espera por firmar por día
+
+```{r}
+
+```
+
